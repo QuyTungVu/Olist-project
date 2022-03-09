@@ -1,0 +1,476 @@
+#importation des librairies
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.cm as cm
+from sklearn import metrics
+import matplotlib.pyplot as plt
+from sklearn import preprocessing
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.metrics import pairwise_distances
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.preprocessing import QuantileTransformer, quantile_transform
+from scipy.cluster.hierarchy import dendrogram
+
+# Importation de la BDD
+df = pd.read_csv('base de données V2.csv', encoding="UTF-8",sep=";")
+df
+
+# Vérifier s'il y a des valeurs manquantes
+df.info()
+
+# Nombre de produits payés par les clients
+df["order_id"].value_counts()
+
+# Suppression des colonnes inutiles dans nos traitements
+df.drop(["seller_id", "shipping_limit_date",
+                       "freight_value"], axis=1, inplace=True)
+df.drop(["product_name_lenght", "product_description_lenght",
+                    "product_photos_qty", "product_weight_g", 
+                    "product_length_cm", "product_height_cm", "product_width_cm"],
+                    axis=1, inplace=True)
+df.drop(["review_comment_title", "review_comment_message",
+                        "review_creation_date", "review_answer_timestamp", "Unnamed: 39"],
+                       axis=1, inplace=True)
+# Verifions s'il y a des valeurs manquantes
+df.info()
+df.isna().sum()
+
+# Suppression des valeurs manquantes
+df["customer_unique_id"].isna().sum()
+df = df[~df["customer_unique_id"].isna()]
+df.isna().sum()
+df.head(10)
+df.shape
+
+SEGMENTATION RFM
+# Distribution de clients par ville en Brazil
+distribution = df[['customer_city', 'customer_unique_id']].\
+                groupby(['customer_city']).\
+                agg({'customer_unique_id': lambda x: x.nunique()}).\
+                reset_index().sort_values('customer_unique_id',
+                                          ascending=False)
+
+distribution.rename(columns={'customer_unique_id': 'nombre clients'},
+                    inplace=True)
+distribution.head()
+
+# Nombre de clients
+distribution['nombre clients'].sum()
+
+# Verifier s'il n'y a pas de valeurs négatives sur les prix
+df.price.min()
+
+# Compter le nombre de valeurs uniques
+def unique_counts(df):
+    """ Returns the unique number of value per variable. """
+    for i in df.columns:
+        count = df[i].nunique()
+        print("%s : %d" % (i, count))
+
+
+unique_counts(df)
+
+# Changer le Type de "order_purchase_timestamp" en datetime
+df["order_purchase_timestamp"] = pd.\
+    to_datetime(df["order_purchase_timestamp"])
+    
+# Rechercher la date la plus ancienne
+ancien = df["order_purchase_timestamp"].min()
+ancien
+
+# Rechercher la date la plus récente
+recent = df["order_purchase_timestamp"].max()
+recent
+
+import datetime as dt
+aammjj = str.split(str.split(str(recent))[0], "-")
+NOW = dt.datetime(int(aammjj[0]), int(aammjj[1]), int(aammjj[2]) + 1)
+
+# RFM table
+
+# Recence: nombre de jours écoulés depuis la dernière date d'achat
+# Frequence: nombre de fois que le client a acheté des produits
+# Montant: le montant total dépensé par le client
+
+rfmTable = df.groupby('customer_unique_id').\
+            agg({"order_purchase_timestamp": lambda x: (NOW - x.max()).days,
+                 "order_id": lambda x: x.nunique(),
+                 "price": lambda x: sum(x)})
+
+rfmTable['order_purchase_timestamp'] = rfmTable['order_purchase_timestamp'].astype(int)
+
+# Quartile
+quartiles = rfmTable.quantile(q=[0.25, 0.5, 0.75])  
+print(quartiles)
+quartiles = quartiles.to_dict()    # Transformation de dataframe à dictionnaire
+quartiles
+segmented_rfm = rfmTable.copy()
+
+#  La Table RFM avec les scores
+segmented_rfm['r_quartile'] = segmented_rfm['recency'].\
+    apply(RScore, args=('recency', quartiles))
+
+segmented_rfm['f_quartile'] = segmented_rfm['frequency'].\
+    apply(FMScore, args=('frequency', quartiles))
+
+segmented_rfm['m_quartile'] = segmented_rfm['monetary_value'].\
+    apply(FMScore, args=('monetary_value', quartiles))
+
+segmented_rfm['RFMScore'] = (segmented_rfm["r_quartile"].astype(str) + "-").\
+                    str.cat(segmented_rfm["f_quartile"].astype(str) + "-").\
+                    str.cat(segmented_rfm["m_quartile"].astype(str))
+
+segmented_rfm.head()
+
+# Graphiques
+def compute_histogram_bins(data, desired_bin_size):
+    min_val = np.min(data)
+    max_val = np.max(data)
+    min_boundary = -1.0 * (min_val % desired_bin_size - min_val)
+    max_boundary = max_val - max_val % desired_bin_size + desired_bin_size
+    n_bins = int((max_boundary - min_boundary) / desired_bin_size) + 1
+    bins = np.linspace(min_boundary, max_boundary, n_bins)
+    return bins
+
+
+r = segmented_rfm['recency']
+m = segmented_rfm['monetary_value']
+
+plt.figure(figsize=(16, 5))
+plt.subplots_adjust(wspace=0.5)
+
+# Recency
+plt.subplot(131)
+plt.xlabel('Recency')
+plt.ylabel('Frequence')
+counts, bins = np.histogram(r)
+plt.hist(bins[:-1], bins, weights=counts)
+
+# Frequency
+plt.subplot(132)
+plt.xlabel('Frequency')
+plt.ylabel('Frequence')
+segmented_rfm['frequency'].value_counts().plot(kind="bar", width=0.5)
+
+# Monetary
+plt.subplot(133)
+plt.xlabel('Monetary')
+plt.ylabel('Frequence')
+bins = compute_histogram_bins(m, 100)
+plt.hist(m, bins=bins)
+
+plt.show()
+
+#Boîte à mustasche
+fig = plt.figure(figsize=(15, 4))
+
+ax = fig.add_subplot(131)
+ax.boxplot(segmented_rfm["recency"], vert=False)
+
+ax = fig.add_subplot(132)
+ax.boxplot(segmented_rfm["frequency"], vert=False)
+
+ax = fig.add_subplot(133)
+ax.boxplot(segmented_rfm["monetary_value"], vert=False)
+
+
+rfmTable.rename(columns={'order_purchase_timestamp': 'recency',
+                         'order_id': 'frequency',
+                         'price': 'monetary_value'}, inplace=True)
+rfmTable.head()
+
+#RFM Score
+segmented_rfm['RFMScore'].unique()
+mean_var = segmented_rfm.groupby("RFMScore")[
+    ["recency", "frequency", "monetary_value"]].\
+    agg([np.mean, np.var])
+
+mean_var["size"] = segmented_rfm.groupby('RFMScore')[['recency']].\
+    agg([np.size])
+
+mean_var
+
+# Table RFM
+# Recency X frequency, Recency X Monetary_value, Frequency X Monetary_value
+RF = pd.DataFrame(columns=['1', '2', '3', '4'])
+RM = pd.DataFrame(columns=['1', '2', '3', '4'])
+FM = pd.DataFrame(columns=['1', '2', '3', '4'])
+size = segmented_rfm.shape[0]
+for i in range(1, 5):
+    row_crf = []
+    row_crm = []
+    row_cfm = []
+    for j in range(1, 5):
+        crf = 0
+        crm = 0
+        cfm = 0
+        for k, row in segmented_rfm.iterrows():
+            if row["r_quartile"] == i and row["f_quartile"] == j:
+                crf += 1
+            if row["r_quartile"] == i and row["m_quartile"] == j:
+                crm += 1
+            if row["f_quartile"] == i and row["m_quartile"] == j:
+                cfm += 1
+        row_crf.append(crf)
+        row_crm.append(crm)
+        row_cfm.append(cfm)
+    RF.loc[i] = row_crf
+    RM.loc[i] = row_crm
+    FM.loc[i] = row_cfm
+RF.style.set_caption("Recency X Frequency")
+RF
+RM.style.set_caption("Recency X Monetary")
+RM
+FM.style.set_caption("frequency X Monetary")
+FM
+
+# Construire la table de segmentation clients
+# Nommer les segments par les notes RFM
+customer_segment = pd.DataFrame()
+segment = ["les meilleurs clients", "les clients loyaux", "les grands dépensiers", "les presque perdus",
+           "les clients perdus", "les clients bon marché", "Autres"
+          ]
+rfm = ["1-1-1", "X-1-X", "X-X-1", "3-1-1", "4-1-1", "4-4-4", "Autres"]
+# Ajouter les commentaires et conseils
+description = ["Les clients qui ont acheté le plus récemment, le plus souvent \
+               et qui dépensent le plus.",
+               "Les clients ayant acheté le plus récemment",
+               "Les clients qui dépensent le plus",
+               "N'ont pas acheté depuis un certain temps, mais ont acheté fréquemment \
+               et ont dépensé le plus.",
+               "N'ont pas acheté depuis longtemps, mais ont acheté fréquemment et ont \
+               dépensé le plus.",
+               "Dernier achat il y a longtemps, acheté peu et dépensé peu.",
+               ""
+              ]
+marketing = ["Pas d'incitation aux prix, Nouveaux produits et programmes de fidélité",
+             "Vendre des produits de plus grande valeur. Demandez des commentaires. Engagez-les.",
+             "Commercialisez vos produits les plus chers.",
+             "Offrez d'autres produits pertinents et des rabais spéciaux.",
+             "Incitations à des prix agressifs",
+             "Ne passez pas trop de temps à essayer de vous ré-acquérir.",
+             "Ajuster les intervales pour le réduire si important"
+            ]
+customer_segment["rfm"] = rfm
+customer_segment["segments clients"] = segment
+
+# Calculer le nombre contenu dans chaque segments - deux types de notes X1X et XX1 
+sums = []
+X1X = ["1-1-2", "1-1-3", "1-1-4", "2-1-1", "2-1-2", "2-1-3", "2-1-4"]
+XX1 = ["1-2-1", "1-3-1", "1-4-1", "2-2-1", "2-3-1", "2-4-1"]
+for r in rfm:
+    count = 0
+    if r == "X-1-X":
+        for j, row in segmented_rfm.iterrows():
+            if row["RFMScore"] in X1X:
+                count += 1
+        sums.append(count)
+    if r == "X-X-1":
+        for j, row in segmented_rfm.iterrows():
+            if row["RFMScore"] in XX1 and r != "2-1-1":
+                count += 1
+        sums.append(count)
+    if r != "X-1-X" and r != "X-X-1" and r != "Autres":
+        for j, row in segmented_rfm.iterrows():
+            if row["RFMScore"] == r:
+                count += 1
+        sums.append(count)
+    if r == "Autres":
+        for j, row in segmented_rfm.iterrows():
+            if row["RFMScore"] not in rfm and row["RFMScore"] not in X1X and \
+            row["RFMScore"] not in XX1:
+                count += 1
+        sums.append(count)
+        
+customer_segment["nombre de clients"] = sums
+customer_segment["activité"] = description
+customer_segment["Conseil d'action"] = marketing
+
+# Motre le table de Customer/segment
+pd.set_option('display.max_colwidth', None)
+customer_segment
+
+# Créer une table de segmentation clients version finale
+customer_segment_ = pd.DataFrame()
+segment_ = ["les meilleurs clients", "les clients loyaux", "les clients prommeteurs", "les grands dépensiers",
+            "les presque perdus", "les clients perdus", "les clients bon marché", "Autres"
+           ]
+description_ = ["Les clients qui ont acheté le plus récemment, le plus souvent \
+                et qui dépensent le plus.",
+                "Les clients ayant acheté le plus récemment",
+                "Des acheteurs récents, mais qui n'ont pas beaucoup dépensé",
+                "Les clients qui dépensent le plus",
+                "N'ont pas acheté depuis un certain temps, mais ont acheté fréquemment \
+                et ont dépensé le plus.",
+                "N'ont pas acheté depuis longtemps, mais ont acheté fréquemment \
+                et ont dépensé le plus.",
+                "Dernier achat il y a longtemps, acheté peu et dépensé peu.",
+                ""
+               ]
+marketing_ = ["Pas d'incitation aux prix, Nouveaux produits et programmes de fidélité",
+              "Vendre des produits de plus grande valeur. Demandez des commentaires. Engagez-les.",
+              "offrir des essais gratuits",
+              "Commercialisez vos produits les plus chers.",
+              "Offrez d'autres produits pertinents et des rabais spéciaux.",
+              "Incitations à des prix agressifs",
+              "Ne passez pas trop de temps à essayer de vous ré-acquérir.",
+              "Ajuster les intervales pour le réduire si important"
+             ]
+customer_segment_["segment"] = segment_
+
+# Calculer le nombre contenu dans chaque segments 
+recents_ = []
+def countCustomerSegment(segmented_rfmp):
+    """Main function is to return the customer identities for each segment"""
+    seg_cus_id = {"les meilleurs clients": [], "les clients loyaux": [], "les clients prommeteurs": [],
+                  "les grands dépensiers": [],"les presque perdus": [], "les clients perdus": [],
+                  "les clients bon marché": [], "Autres": []}
+    sums_ = []
+    best = ["1-1-1"]
+    X1X_ = ["1-1-2", "1-1-3", "1-1-4", "2-1-1", "2-1-2", "2-1-3", "2-1-4", "1-4-2", "2-4-2"]
+    promiss = ["1-4-3", "1-4-4", "2-4-3", "2-4-4"]
+    XX1_ = ["1-2-1", "1-3-1", "1-4-1", "2-3-1", "2-4-1"]
+    almost_lost = ["3-1-1", "3-4-1", "3-4-2"]
+    lost = ["3-4-3", "3-4-4", "4-1-1", "4-4-1", "4-4-2"]
+    lost_cheap = ["4-4-4", "4-4-3"]
+    for s in segment_:
+        count = 0
+        rec = 0
+        if s == "les meilleurs clients":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in best:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les clients loyaux":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in X1X_:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les clients prommeteurs":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in promiss:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les grands dépensiers":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in XX1_:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les presque perdus":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in almost_lost:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les clients perdus":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in lost:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "les clients bon marché":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] in lost_cheap:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+        if s == "Autres":
+            for j, row in segmented_rfmp.iterrows():
+                if row["RFMScore"] not in best and row["RFMScore"] not in X1X_ \
+                and row["RFMScore"] not in XX1_ and row["RFMScore"] not in promiss and \
+                row["RFMScore"] not in lost and row["RFMScore"] not in almost_lost and \
+                row["RFMScore"] not in lost_cheap:
+                    count += 1
+                    rec += row["recency"]
+                    seg_cus_id[s].append(j)
+                    
+        sums_.append(count)
+        recents_.append(int(rec/count))
+        
+    return (seg_cus_id,sums_)
+
+# Compléter le table de segmentation clients
+cus_id, customer_segment_["nombre de clients"] = countCustomerSegment(segmented_rfm)
+customer_segment_["description"] = description_
+customer_segment_["marketing"] = marketing_
+
+#customer/segment
+customer_segment_
+
+# Nombre de clients par segments en graphiques barres
+plt.figure(figsize=(18, 4))
+plt.bar(customer_segment_["segment"], customer_segment_["nombre de clients"], align='center',
+        color=["green", "lime", "#87ceeb", "yellow", "orange", "red", "#2F4F4F", "black"]
+       )
+plt.xlabel('Segment')
+plt.ylabel('Nombre de clients par segments')
+
+# Nombre de clients par segments en graphiques barres horizontales
+fig, ax = plt.subplots() 
+ax.barh(customer_segment_["segment"].iloc[::-1] , recents_[::-1],
+        color=["black", "#2F4F4F", "red", "orange", "yellow","#87ceeb", "lime", "green"]
+       )
+plt.xlabel('Nombre moyen de jours recents')
+plt.ylabel('Segmentations')
+for i, v in enumerate(recents_[::-1]):
+    ax.text(v + 3, i + .0, str(v), color='blue')
+    
+# Construire le graphique de la table de surlignage
+XRFM = segmented_rfm[["recency", "frequency", "monetary_value"]].copy()
+segments_labels = []
+for i, row in XRFM.iterrows():
+    if i in cus_id["les meilleurs clients"]:
+        segments_labels.append("les meilleurs clients")
+        continue
+    if i in cus_id["les clients loyaux"]:
+        segments_labels.append("les clients loyaux")
+        continue
+    if i in cus_id["les clients prommeteurs"]:
+        segments_labels.append("les clients prommeteurs")
+        continue
+    if i in cus_id["les grands dépensiers"]:
+        segments_labels.append("les grands dépensiers")
+        continue
+    if i in cus_id["les presque perdus"]:
+        segments_labels.append("les presque perdus")
+        continue
+    if i in cus_id["les clients perdus"]:
+        segments_labels.append("les clients perdus")
+        continue
+    if i in cus_id["les clients bon marché"]:
+        segments_labels.append("les clients bon marché")
+        continue
+    if i in cus_id["Autres"]:
+        segments_labels.append("Autres")
+        continue
+relative_imp_sort = pd.DataFrame()
+XRFM["segment_appartenance"] = segments_labels
+
+population = segmented_rfm[["recency", "frequency", "monetary_value"]].copy()
+population_avg = population.mean()
+
+cluster_avg = XRFM.groupby(['segment_appartenance']).mean()
+relative_imp = cluster_avg / population_avg - 1
+
+relative_imp_sort["les meilleurs clients"] = relative_imp.loc["les meilleurs clients"]
+relative_imp_sort["les clients loyaux"] = relative_imp.loc["les clients loyaux"]
+relative_imp_sort["les clients prommeteurs"] = relative_imp.loc["les clients prommeteurs"]
+relative_imp_sort["les grands dépensiers"] = relative_imp.loc["les grands dépensiers"]
+relative_imp_sort["les presque perdus"] = relative_imp.loc["les presque perdus"]
+relative_imp_sort["les clients perdus"] = relative_imp.loc["les clients perdus"]
+relative_imp_sort["les clients bon marché"] = relative_imp.loc["les clients bon marché"]
+relative_imp_sort["Autres"] = relative_imp.loc["Autres"]
+
+plt.figure(figsize=(8, 4))
+ax = sns.heatmap(data=relative_imp_sort.T, annot=True, fmt='.2f', cmap='RdYlGn')
+ax.set_ylim(len(relative_imp), 0)
+plt.title('Importance relative des attributs')
+plt.show()
